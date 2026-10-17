@@ -1,0 +1,6 @@
+question_text,question_type,option_a,option_b,option_c,option_d,correct_answer,difficulty,points,topic,explanation
+What is the capital of France?,mcq,Berlin,Madrid,Paris,Rome,C,easy,1,Geography,Paris is the capital of France.
+The Earth revolves around the Sun.,true_false,True,False,,,A,easy,1,Science,The Earth orbits the Sun once per year.
+What is 2 + 2?,mcq,3,4,5,6,B,easy,1,Math,2 + 2 equals 4.
+Name the process by which plants make food.,short_answer,,,,,photosynthesis,medium,2,Biology,Photosynthesis converts light energy into chemical energy.
+HTTP status code 404 means?,mcq,OK,Created,Not Found,Unauthorized,C,medium,1,Computer Science,404 indicates the requested resource was not found.
