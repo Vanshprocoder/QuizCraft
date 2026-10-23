@@ -13,9 +13,17 @@ export default function ProtectedRoute({ role }: { role?: 'teacher' | 'student' 
   }
 
   if (!session) return <Navigate to="/login" replace />
-  if (role && profile.role !== role) {
-    return <Navigate to={profile.role === 'teacher' ? '/teacher' : '/student'} replace />
-  }
+  // if (role && profile.role !== role) {
+  //   return <Navigate to={profile.role === 'teacher' ? '/teacher' : '/student'} replace />
+  // }
 
+  if (role && profile && profile.role !== role) {
+    return (
+      <Navigate
+        to={profile.role === 'teacher' ? '/teacher' : '/student'}
+        replace
+      />
+    )
+  }
   return <Outlet />
 }

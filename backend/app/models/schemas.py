@@ -154,3 +154,16 @@ class ProfileOut(BaseModel):
     email: str
     full_name: str
     role: UserRole
+
+
+class RegisterRequest(BaseModel):
+    email: str
+    password: str = Field(min_length=6)
+    full_name: str
+    role: UserRole = UserRole.student
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str = Field(min_length=1)
+

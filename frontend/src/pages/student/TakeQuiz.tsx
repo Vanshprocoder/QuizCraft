@@ -59,35 +59,79 @@ export default function TakeQuiz() {
     return `${m}:${s.toString().padStart(2, '0')}`
   }, [secondsLeft])
 
-  async function submit(auto = false) {
-    if (!attemptId || busy || result) return
-    setBusy(true)
-    setError('')
-    try {
-      const body = {
-        answers: Object.entries(answers).map(([question_id, answer]) => ({ question_id, answer })),
-      }
-      const { data } = await api.post(`/attempts/${attemptId}/submit`, body)
-      if (data.results) {
-        setResult({
-          percentage: data.results.percentage,
-          score: data.results.score,
-          max_score: data.results.max_score,
+
+
+async function submit(auto = false) {
+  if (!attemptId || busy || result) return
+
+  setBusy(true)
+  setError('')
+
+  try {
+    const body = {
+      answers: Object.entries(answers).map(
+        ([question_id, answer]) => ({
+          question_id,
+          answer,
         })
-      } else {
-        setResult({ percentage: data.attempt.percentage, score: data.attempt.score, max_score: data.attempt.max_score })
-      }
-      sessionStorage.removeItem(`attempt:${attemptId}`)
-      if (!auto) {
-        // stay on page to show results
-      }
-    } catch (err: unknown) {
-      // @ts-expect-error axios
-      setError(err.response?.data?.detail || 'Submit failed')
-    } finally {
-      setBusy(false)
+      ),
     }
+
+    const { data } = await api.post(
+      `/attempts/${attemptId}/submit`,
+      body
+    )
+
+    // Handle the backend response safely
+    setResult({
+      percentage: Number(
+        data.percentage ??
+          data.results?.percentage ??
+          data.attempt?.percentage ??
+          0
+      ),
+      score: Number(
+        data.score ??
+          data.results?.score ??
+          data.attempt?.score ??
+          0
+      ),
+      max_score: Number(
+        data.max_score ??
+          data.results?.max_score ??
+          data.attempt?.max_score ??
+          0
+      ),
+    })
+
+    // Clear the saved attempt after successful submission
+    sessionStorage.removeItem(`attempt:${attemptId}`)
+
+    if (!auto) {
+      // Results will be displayed on the current page
+    }
+  } catch (err: unknown) {
+    const error = err as {
+      response?: {
+        data?: {
+          detail?: string
+          message?: string
+        }
+      }
+      message?: string
+    }
+
+    setError(
+      error.response?.data?.detail ||
+        error.response?.data?.message ||
+        error.message ||
+        'Submit failed. Please try again.'
+    )
+  } finally {
+    setBusy(false)
   }
+}
+
 
   if (error && !payload) {
     return (
@@ -127,9 +171,9 @@ export default function TakeQuiz() {
         <p>Answer all questions before time runs out. Auto-submit triggers at 0:00.</p>
         <div className="cta-row">
           <span className="timer">Time left {clock}</span>
-          <button className="btn" type="button" disabled={busy} onClick={() => submit(false)}>
+          {/* <button className="btn" type="button" disabled={busy} onClick={() => submit(false)}>
             {busy ? 'Submitting…' : 'Submit quiz'}
-          </button>
+          </button> */}
         </div>
       </section>
 
@@ -170,6 +214,23 @@ export default function TakeQuiz() {
           )}
         </div>
       ))}
+
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'center',
+          margin: '2rem 0',
+        }}
+      >
+        <button
+          className="btn"
+          type="button"
+          disabled={busy}
+          onClick={() => submit(false)}
+        >
+          {busy ? 'Submitting…' : 'Submit quiz'}
+        </button>
+      </div>
     </div>
   )
 }

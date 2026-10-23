@@ -86,6 +86,18 @@ VITE_API_URL=http://localhost:8000/api
 
 App: [http://localhost:5173](http://localhost:5173)
 
+## Authentication (no email confirmation)
+
+Signup does **not** send confirmation emails. The frontend calls `POST /api/auth/register`, which uses the Supabase **service role** to create a user with `email_confirm: true`, then signs in with password.
+
+That avoids Supabase’s “email rate limit exceeded” during development.
+
+Use a normal-looking email (`you@gmail.com`). Disposable / clearly fake addresses can still be rejected by Supabase as “invalid email”.
+
+If you previously hit the email rate limit from the old signup flow, wait ~1 hour (or try a new email). The new path does not send mail.
+
+Optional dashboard setting (not required for this app): Supabase → Authentication → Providers → Email → disable **Confirm email**.
+
 ## Typical teacher → student flow
 
 1. Register as **teacher**, sign in.

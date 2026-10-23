@@ -20,8 +20,8 @@ export default function Register() {
     setMessage('')
     try {
       await signUp(email, password, fullName, role)
-      setMessage('Account created. Check your email if confirmation is enabled, then sign in.')
-      setTimeout(() => navigate('/login'), 1200)
+      setMessage('Account created. Signing you in…')
+      navigate(role === 'teacher' ? '/teacher' : '/student')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Registration failed')
     } finally {

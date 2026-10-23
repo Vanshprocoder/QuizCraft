@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     supabase_anon_key: str = ""
     supabase_service_role_key: str = ""
     supabase_jwt_secret: str = ""
+    # Used for QuizCraft local login tokens (not Supabase Auth)
+    app_jwt_secret: str = "quizcraft-college-dev-secret-change-me"
     gemini_api_key: str = ""
     cors_origins: str = "http://localhost:5173"
     backend_host: str = "0.0.0.0"

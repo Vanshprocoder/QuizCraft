@@ -1,3 +1,4 @@
+
 import {
   createContext,
   useCallback,
@@ -41,54 +42,162 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [profile, setProfile] = useState<Profile | null>(null)
   const [loading, setLoading] = useState(true)
 
+  // Load the authenticated user's profile from the FastAPI backend.
   const refreshProfile = useCallback(async () => {
     try {
-      const { data } = await api.get<Profile>('/auth/me')
-      setProfile(data)
-    } catch {
+      const {
+        data: { session: currentSession },
+        error,
+      } = await supabase.auth.getSession()
+
+      if (error) throw error
+
+      const accessToken = currentSession?.access_token
+
+      if (!accessToken) {
+        setProfile(null)
+        return
+      }
+
+      const response = await api.get<Profile>('/auth/me', {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      })
+
+      setProfile(response.data)
+    } catch (error) {
+      console.error('Failed to load profile:', error)
       setProfile(null)
     }
   }, [])
 
+  // Restore the saved Supabase session when the app starts.
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session)
-      setLoading(false)
+    let mounted = true
+
+    const initializeSession = async () => {
+      try {
+        const {
+          data: { session: savedSession },
+          error,
+        } = await supabase.auth.getSession()
+
+        if (error) throw error
+
+        if (mounted) {
+          setSession(savedSession)
+        }
+      } catch (error) {
+        console.error('Failed to initialize session:', error)
+
+        if (mounted) {
+          setSession(null)
+          setProfile(null)
+        }
+      } finally {
+        if (mounted) {
+          setLoading(false)
+        }
+      }
+    }
+
+    void initializeSession()
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      if (mounted) {
+        setSession(nextSession)
+        setLoading(false)
+      }
     })
 
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, next) => {
-      setSession(next)
-    })
-    return () => sub.subscription.unsubscribe()
+    return () => {
+      mounted = false
+      subscription.unsubscribe()
+    }
   }, [])
 
+  // Refresh the profile whenever the authenticated session changes.
   useEffect(() => {
-    if (session) {
-      refreshProfile()
-    } else {
+    if (!session) {
       setProfile(null)
+      return
     }
+
+    void refreshProfile()
   }, [session, refreshProfile])
 
   const signUp = useCallback(
-    async (email: string, password: string, fullName: string, role: 'teacher' | 'student') => {
-      const { error } = await supabase.auth.signUp({
-        email,
+    async (
+      email: string,
+      password: string,
+      fullName: string,
+      role: 'teacher' | 'student',
+    ) => {
+      const normalizedEmail = email.trim().toLowerCase()
+
+      try {
+        await api.post('/auth/register', {
+          email: normalizedEmail,
+          password,
+          full_name: fullName.trim(),
+          role,
+        })
+      } catch (err: unknown) {
+        const detail =
+          typeof err === 'object' &&
+          err !== null &&
+          'response' in err
+            ? (err as {
+                response?: { data?: { detail?: string } }
+              }).response?.data?.detail
+            : undefined
+
+        throw new Error(
+          typeof detail === 'string' ? detail : 'Registration failed',
+        )
+      }
+
+      // Registration creates the account; sign in to establish a session.
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: normalizedEmail,
         password,
-        options: { data: { full_name: fullName, role } },
       })
+
       if (error) throw error
+
+      if (!data.session) {
+        throw new Error('Registration succeeded, but no login session was created.')
+      }
+
+      setSession(data.session)
     },
     [],
   )
 
   const signIn = useCallback(async (email: string, password: string) => {
-    const { error } = await supabase.auth.signInWithPassword({ email, password })
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email: email.trim().toLowerCase(),
+      password,
+    })
+
     if (error) throw error
+
+    if (!data.session) {
+      throw new Error('Login succeeded, but no session was returned.')
+    }
+
+    setSession(data.session)
   }, [])
 
   const signOut = useCallback(async () => {
-    await supabase.auth.signOut()
+    const { error } = await supabase.auth.signOut()
+
+    if (error) throw error
+
+    setSession(null)
     setProfile(null)
   }, [])
 
@@ -103,14 +212,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       signOut,
       refreshProfile,
     }),
-    [session, profile, loading, signUp, signIn, signOut, refreshProfile],
+    [
+      session,
+      profile,
+      loading,
+      signUp,
+      signIn,
+      signOut,
+      refreshProfile,
+    ],
   )
 
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
+  return (
+    <AuthContext.Provider value={value}>
+      {children}
+    </AuthContext.Provider>
+  )
 }
 
 export function useAuth() {
-  const ctx = useContext(AuthContext)
-  if (!ctx) throw new Error('useAuth must be used within AuthProvider')
-  return ctx
+  const context = useContext(AuthContext)
+
+  if (!context) {
+    throw new Error('useAuth must be used within AuthProvider')
+  }
+
+  return context
 }

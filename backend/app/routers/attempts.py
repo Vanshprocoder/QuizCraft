@@ -1,14 +1,16 @@
+
 from datetime import datetime, timezone
-from typing import Annotated, Any
+from typing import Annotated
+import random
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from app.core.auth import get_current_user, require_role
+from app.core.auth import require_role
 from app.core.supabase_client import get_supabase
-from app.models.schemas import AttemptStartRequest, AttemptSubmitRequest
-from app.services.grading_service import grade_attempt
+from app.models.schemas import AttemptStartRequest
 
-router = APIRouter(prefix="/attempts", tags=["attempts"])
+
+router = APIRouter(prefix="/attempts", tags=["Attempts"])
 
 
 @router.post("/start")
@@ -17,183 +19,345 @@ async def start_attempt(
     user: Annotated[dict, Depends(require_role("student"))],
 ):
     supabase = get_supabase()
-    quiz = (
+    access_code = payload.access_code.upper().strip()
+
+    # Find the published quiz.
+    quiz_response = (
         supabase.table("quizzes")
         .select("*")
-        .eq("access_code", payload.access_code.upper().strip())
+        .eq("access_code", access_code)
         .eq("status", "published")
         .maybe_single()
         .execute()
     )
-    if not quiz.data:
-        raise HTTPException(status_code=404, detail="Invalid access code or quiz not published")
 
-    existing = (
+    quiz = quiz_response.data if quiz_response else None
+
+    if not quiz:
+        raise HTTPException(
+            status_code=404,
+            detail="Invalid access code or quiz not published",
+        )
+
+    # Resume an existing in-progress attempt if one exists.
+    existing_response = (
         supabase.table("attempts")
         .select("*")
-        .eq("quiz_id", quiz.data["id"])
+        .eq("quiz_id", quiz["id"])
         .eq("student_id", user["id"])
         .eq("status", "in_progress")
         .maybe_single()
         .execute()
     )
-    if existing.data:
-        attempt = existing.data
-    else:
-        created = (
+
+    attempt = existing_response.data if existing_response else None
+
+    if not attempt:
+        created_response = (
             supabase.table("attempts")
             .insert(
                 {
-                    "quiz_id": quiz.data["id"],
+                    "quiz_id": quiz["id"],
                     "student_id": user["id"],
                     "status": "in_progress",
-                    "started_at": datetime.now(timezone.utc).isoformat(),
+                    "started_at": datetime.now(
+                        timezone.utc
+                    ).isoformat(),
+                    "answers": {},
                 }
             )
             .execute()
         )
-        attempt = created.data[0]
 
-    questions = (
+        created_data = (
+            created_response.data if created_response else None
+        )
+
+        if not created_data:
+            raise HTTPException(
+                status_code=500,
+                detail="Could not create test attempt",
+            )
+
+        attempt = created_data[0]
+
+    # Fetch approved questions. Never send correct answers to the student.
+    questions_response = (
         supabase.table("questions")
-        .select("id, question_text, question_type, options, points, difficulty, topic")
-        .eq("quiz_id", quiz.data["id"])
+        .select(
+            "id, question_text, question_type, options, "
+            "points, difficulty, topic"
+        )
+        .eq("quiz_id", quiz["id"])
         .eq("is_approved", True)
         .execute()
     )
 
-    q_list = questions.data or []
-    if quiz.data.get("shuffle_questions"):
-        import random
+    questions = (
+        questions_response.data if questions_response else []
+    ) or []
 
-        random.shuffle(q_list)
+    if quiz.get("shuffle_questions"):
+        random.shuffle(questions)
 
     return {
         "attempt": attempt,
         "quiz": {
-            "id": quiz.data["id"],
-            "title": quiz.data["title"],
-            "description": quiz.data.get("description"),
-            "duration_minutes": quiz.data["duration_minutes"],
-            "show_results_immediately": quiz.data.get("show_results_immediately", True),
+            "id": quiz["id"],
+            "title": quiz["title"],
+            "description": quiz.get("description"),
+            "duration_minutes": quiz.get("duration_minutes"),
+            "show_results_immediately": quiz.get(
+                "show_results_immediately", True
+            ),
         },
-        "questions": q_list,
+        "questions": questions,
     }
 
 
 @router.post("/{attempt_id}/submit")
 async def submit_attempt(
     attempt_id: str,
-    payload: AttemptSubmitRequest,
+    payload: dict,
     user: Annotated[dict, Depends(require_role("student"))],
 ):
     supabase = get_supabase()
-    attempt = supabase.table("attempts").select("*").eq("id", attempt_id).maybe_single().execute()
-    if not attempt.data or attempt.data["student_id"] != user["id"]:
-        raise HTTPException(status_code=404, detail="Attempt not found")
-    if attempt.data["status"] != "in_progress":
-        raise HTTPException(status_code=400, detail="Attempt already submitted")
 
-    quiz = supabase.table("quizzes").select("*").eq("id", attempt.data["quiz_id"]).maybe_single().execute()
-    if not quiz.data:
-        raise HTTPException(status_code=404, detail="Quiz not found")
-
-    started = datetime.fromisoformat(attempt.data["started_at"].replace("Z", "+00:00"))
-    now = datetime.now(timezone.utc)
-    elapsed = int((now - started).total_seconds())
-    limit = int(quiz.data["duration_minutes"]) * 60 + 30  # small grace
-    if elapsed > limit:
-        # Still accept but mark timed out path the same as submit
-        pass
-
-    questions = (
-        supabase.table("questions")
+    # Verify ownership and ensure the attempt has not already been submitted.
+    attempt_response = (
+        supabase.table("attempts")
         .select("*")
-        .eq("quiz_id", quiz.data["id"])
+        .eq("id", attempt_id)
+        .eq("student_id", user["id"])
+        .maybe_single()
+        .execute()
+    )
+
+    attempt = attempt_response.data if attempt_response else None
+
+    if not attempt:
+        raise HTTPException(
+            status_code=404,
+            detail="Attempt not found",
+        )
+
+    if attempt.get("status") != "in_progress":
+        raise HTTPException(
+            status_code=400,
+            detail="This attempt has already been submitted",
+        )
+
+    # Fetch the quiz questions and correct answers for server-side grading.
+    questions_response = (
+        supabase.table("questions")
+        .select(
+            "id, question_text, question_type, correct_answer, "
+            "points, is_approved"
+        )
+        .eq("quiz_id", attempt["quiz_id"])
         .eq("is_approved", True)
         .execute()
     )
-    answer_map = {a.question_id: a.answer for a in payload.answers}
-    graded = grade_attempt(questions.data or [], answer_map)
 
-    updated = (
+    questions = (
+        questions_response.data if questions_response else []
+    ) or []
+
+    if not questions:
+        raise HTTPException(
+            status_code=400,
+            detail="No approved questions found for this quiz",
+        )
+
+    # Accept either {"answers": {"question-id": "answer"}}
+    # or {"answers": [{"question_id": "...", "answer": "..."}]}.
+    submitted_answers = payload.get("answers", {})
+
+    if isinstance(submitted_answers, dict):
+        answers_by_id = {
+            str(question_id): answer
+            for question_id, answer in submitted_answers.items()
+        }
+    elif isinstance(submitted_answers, list):
+        answers_by_id = {
+            str(item["question_id"]): item.get("answer")
+            for item in submitted_answers
+            if isinstance(item, dict) and item.get("question_id")
+        }
+    else:
+        raise HTTPException(
+            status_code=422,
+            detail="Answers must be a dictionary or list",
+        )
+
+    earned_total = 0.0
+    possible_total = 0.0
+    answer_rows = []
+    saved_answers = {}
+
+    for question in questions:
+        question_id = str(question["id"])
+        correct_answer = question.get("correct_answer")
+        submitted = answers_by_id.get(question_id)
+        points = float(question.get("points") or 1)
+
+        # This comparison assumes the submitted answer and correct answer
+        # use the same text representation.
+        is_correct = (
+            submitted is not None
+            and correct_answer is not None
+            and str(submitted).strip().casefold()
+            == str(correct_answer).strip().casefold()
+        )
+
+        points_earned = points if is_correct else 0.0
+
+        earned_total += points_earned
+        possible_total += points
+
+        answer_text = (
+            str(submitted) if submitted is not None else None
+        )
+
+        saved_answers[question_id] = answer_text
+
+        answer_rows.append(
+            {
+                "attempt_id": attempt_id,
+                "question_id": question["id"],
+                "student_answer": answer_text,
+                "correct_answer": (
+                    str(correct_answer)
+                    if correct_answer is not None
+                    else None
+                ),
+                "is_correct": is_correct,
+                "points_earned": points_earned,
+                "points_possible": points,
+            }
+        )
+
+    percentage = (
+        round(earned_total / possible_total * 100, 2)
+        if possible_total > 0
+        else 0.0
+    )
+
+    # Clear any answer rows left by an earlier failed submission attempt.
+    supabase.table("attempt_answers").delete().eq(
+        "attempt_id", attempt_id
+    ).execute()
+
+    # Store answers using the real attempt_answers column names.
+    if answer_rows:
+        supabase.table("attempt_answers").insert(
+            answer_rows
+        ).execute()
+
+    # Update using the actual attempts table columns.
+    updated_response = (
         supabase.table("attempts")
         .update(
             {
                 "status": "submitted",
-                "submitted_at": now.isoformat(),
-                "score": graded["score"],
-                "max_score": graded["max_score"],
-                "percentage": graded["percentage"],
-                "time_spent_seconds": elapsed,
-                "answers": answer_map,
+                "submitted_at": datetime.now(
+                    timezone.utc
+                ).isoformat(),
+                "score": earned_total,
+                "max_score": possible_total,
+                "percentage": percentage,
+                "answers": saved_answers,
             }
         )
         .eq("id", attempt_id)
+        .eq("student_id", user["id"])
+        .eq("status", "in_progress")
         .execute()
     )
 
-    detail_rows = [
-        {
-            "attempt_id": attempt_id,
-            **d,
-        }
-        for d in graded["details"]
-    ]
-    if detail_rows:
-        supabase.table("attempt_answers").insert(detail_rows).execute()
+    if not updated_response or not updated_response.data:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Answers were processed, but the attempt status "
+                "could not be confirmed as saved"
+            ),
+        )
 
-    response: dict[str, Any] = {"attempt": updated.data[0]}
-    if quiz.data.get("show_results_immediately", True):
-        response["results"] = graded
-    return response
+    return {
+        "message": "Test submitted successfully",
+        "attempt_id": attempt_id,
+        "score": earned_total,
+        "max_score": possible_total,
+        "percentage": percentage,
+    }
 
 
 @router.get("/me")
-async def my_attempts(user: Annotated[dict, Depends(get_current_user)]):
+async def my_attempts(
+    user: Annotated[dict, Depends(require_role("student"))],
+):
     supabase = get_supabase()
-    if user["role"] == "student":
-        result = (
-            supabase.table("attempts")
-            .select("*, quizzes(title, subject, passing_score)")
-            .eq("student_id", user["id"])
-            .order("started_at", desc=True)
-            .execute()
-        )
-        return result.data or []
 
-    # Teachers: attempts on their quizzes
-    quizzes = supabase.table("quizzes").select("id").eq("teacher_id", user["id"]).execute()
-    quiz_ids = [q["id"] for q in quizzes.data or []]
-    if not quiz_ids:
-        return []
-    result = (
+    response = (
         supabase.table("attempts")
-        .select("*, quizzes(title), profiles:student_id(full_name, email)")
-        .in_("quiz_id", quiz_ids)
+        .select("*, quizzes(title, description)")
+        .eq("student_id", user["id"])
         .order("started_at", desc=True)
         .execute()
     )
-    return result.data or []
+
+    return {
+        "attempts": (response.data if response else []) or []
+    }
 
 
 @router.get("/{attempt_id}")
-async def get_attempt(attempt_id: str, user: Annotated[dict, Depends(get_current_user)]):
+async def get_attempt(
+    attempt_id: str,
+    user: Annotated[dict, Depends(require_role("student"))],
+):
     supabase = get_supabase()
-    attempt = supabase.table("attempts").select("*").eq("id", attempt_id).maybe_single().execute()
-    if not attempt.data:
-        raise HTTPException(status_code=404, detail="Attempt not found")
 
-    quiz = supabase.table("quizzes").select("*").eq("id", attempt.data["quiz_id"]).maybe_single().execute()
-    if user["role"] == "student" and attempt.data["student_id"] != user["id"]:
-        raise HTTPException(status_code=403, detail="Forbidden")
-    if user["role"] == "teacher" and (not quiz.data or quiz.data["teacher_id"] != user["id"]):
-        raise HTTPException(status_code=403, detail="Forbidden")
+    response = (
+        supabase.table("attempts")
+        .select("*, quizzes(title, description)")
+        .eq("id", attempt_id)
+        .eq("student_id", user["id"])
+        .maybe_single()
+        .execute()
+    )
 
-    answers = (
+    attempt = response.data if response else None
+
+    if not attempt:
+        raise HTTPException(
+            status_code=404,
+            detail="Attempt not found",
+        )
+
+    answers_response = (
         supabase.table("attempt_answers")
-        .select("*, questions(question_text, question_type, options, explanation)")
+        .select("*")
         .eq("attempt_id", attempt_id)
         .execute()
     )
-    return {"attempt": attempt.data, "quiz": quiz.data, "answers": answers.data or []}
+
+    answers = (
+        answers_response.data if answers_response else []
+    ) or []
+
+    # Only reveal correct answers and scores after submission.
+    if attempt.get("status") != "submitted":
+        answers = [
+            {
+                "question_id": item.get("question_id"),
+                "student_answer": item.get("student_answer"),
+            }
+            for item in answers
+        ]
+
+    return {
+        "attempt": attempt,
+        "answers": answers,
+    }
