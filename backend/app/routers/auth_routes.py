@@ -3,7 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.core.auth import get_current_user
-from app.core.supabase_client import get_supabase
+from app.core.supabase_client import get_supabase, get_supabase_anon
 from app.models.schemas import ProfileOut, RegisterRequest, LoginRequest
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -64,7 +64,7 @@ async def register(payload: RegisterRequest):
 @router.post("/login")
 async def login(payload: LoginRequest):
     email = str(payload.email).strip().lower()
-    supabase = get_supabase()
+    supabase = get_supabase_anon()
 
     try:
         # Sign in with the user's email and password.
